@@ -9,8 +9,70 @@ from urllib.error import HTTPError
 from bs4 import BeautifulSoup
 from collections import deque
 from html.parser import HTMLParser
-from urllib.parse import urlparse
+from urllib.parse import urlparse, quote
 import os
+import logging
+import time
+import pandas as pd
+
+
+def chunk(completion):
+    completions = []
+
+    while len(completion) > 4096:
+        cut_index = 0
+        for i in range(4096, -1, -1):
+            if completion[i] in [' ', '\n', '\t', '\r']:
+                cut_index = i
+                break
+        completions.append(completion[:cut_index])
+        completion = completion[cut_index:]
+
+    completions.append(completion)
+
+    return completions
+
+
+RETRY_DELAY = 1  # adjust this as necessary
+RETRY_ATTEMPTS = 10  # adjust this as necessary
+
+
+def translate(sl, tl, q):
+    qs = chunk(q)  # splitting the string into a list of characters
+
+    for i in range(len(qs)):
+        retry_delay = RETRY_DELAY
+        attempts = 0
+
+        while True:
+            attempts += 1
+            try:
+                resp = requests.get(f"https://translate.google.com/m?sl={sl}&tl={tl}&q={quote(qs[i])}")
+            except Exception as e:
+                logging.error(f"Can't do request: {e}")
+                return None
+            if resp.status_code != 200:
+                logging.error(f"Bad status: {resp.status_code}")
+                if attempts < RETRY_ATTEMPTS:
+                    time.sleep(retry_delay)
+                    i -= 1
+                    continue
+                else:
+                    return None
+
+            soup = BeautifulSoup(resp.text, 'html.parser')
+            result_container = soup.find('div', {'class': 'result-container'})
+
+            if result_container is None:
+                logging.error("Not found")
+                return None
+
+            qs[i] = result_container.text
+
+            break  # break the while loop if the request is successful and result is found
+
+    return ' '.join(qs)
+
 
 # Regex pattern to match a URL
 HTTP_URL_PATTERN = r'^http[s]{0,1}://.+$'
@@ -155,6 +217,9 @@ def crawl(url):
             # Get the text but remove the tags
             text = soup.get_text()
 
+            # Translate the content into English
+            # text = translate("auto", "en", text)
+
             # If the crawler gets to a page that requires JavaScript, it will stop the crawl
             if "You need to enable JavaScript to run this app." in text:
                 print("Unable to parse page " + url + " due to JavaScript being required")
@@ -169,5 +234,41 @@ def crawl(url):
                 seen.add(link)
 
 
-if __name__ == "__main__":
-    crawl(full_url)
+crawl(full_url)
+
+
+################################################################################
+# Step 5
+################################################################################
+
+def remove_newlines(serie):
+    serie = serie.str.replace('\n', ' ')
+    # serie = serie.str.replace('\\n', ' ')
+    serie = serie.str.replace('  ', ' ')
+    serie = serie.str.replace('  ', ' ')
+    return serie
+
+
+################################################################################
+# Step 6
+################################################################################
+
+# Create a list to store the text files
+texts = []
+
+# Get all the text files in the text directory
+for file in os.listdir("text/" + domain + "/"):
+    # Open the file and read the text
+    with open("text/" + domain + "/" + file, "r", encoding="UTF-8") as f:
+        text = f.read()
+
+        # Omit the first 11 lines and the last 4 lines, then replace -, _, and #update with spaces.
+        texts.append((file[11:-4].replace('-', ' ').replace('_', ' ').replace('#update', ''), text))
+
+# Create a dataframe from the list of texts
+df = pd.DataFrame(texts, columns=['fname', 'text'])
+
+# Set the text column to be the raw text with the newlines removed
+df['text'] = df.fname + ". " + remove_newlines(df.text)
+df.to_csv('processed/scraped.csv')
+df.head()
