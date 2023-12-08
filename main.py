@@ -118,8 +118,10 @@ def get_hyperlinks(url):
                 response = urlopen(req)  # Make a new request to the new URL
             else:
                 print('HTTPError 308: Location header not found')
+                return []
         else:
             print('HTTPError: {}'.format(e.code))
+            return []
     except Exception as e:
         print(url, e)
         return []
